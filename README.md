@@ -57,6 +57,21 @@ What this means for the design:
 - "paid" is a claim that needs the latest status **and** the ledger, not a single `PAID` event;
 - after a timeout the agent looks the transfer up by `request_id` instead of re-sending.
 
+### Webhooks
+
+[`scripts/webhook-test.ts`](scripts/webhook-test.ts) subscribes a temporary receiver to `payout.transfer.*` events
+through the Webhooks API, runs the same three transfers and records every delivery.
+
+| What we checked | What the sandbox did |
+|---|---|
+| Failures that polling misses | `payout.transfer.failed` is delivered for both failed transfers, followed by `cancelled` |
+| Signatures | All 16 deliveries verified: HMAC-SHA256 over `x-timestamp` + raw body, keyed with the webhook secret |
+| Retries | Answering HTTP 500 made Airwallex redeliver the same event id 0.7 s later — consumers must deduplicate by event id |
+| Latency | In a second run the events stayed `Queued` for more than six minutes and were never delivered — webhooks are a signal, not a clock |
+
+So the agent treats signed, deduplicated webhooks as the primary signal and keeps polling — with the
+"`CANCELLED` + `failure` = failed" rule — as the fallback.
+
 Sandbox quirks we hit: `PROCESSING → FAILED` returns HTTP 500, so failures are simulated from `SENT`;
 `failure.details.type` is always `INCORRECT_ROUTING`, whatever `failure_type` is passed.
 
@@ -68,7 +83,15 @@ node scripts/sandbox-smoke.ts
 ```
 
 The scoped key needs Balances (read), Beneficiaries (read/write), Transfers (read/write), Simulations (write) and
-Financial Transactions (read). Call logs go to `runs/`, which is not committed.
+Financial Transactions (read); the webhook test also needs Webhooks (read/write). Call logs go to `runs/`, which is not
+committed.
+
+The webhook test needs a public HTTPS address for the local receiver, for example a temporary Cloudflare tunnel:
+
+```bash
+cloudflared tunnel --url http://localhost:8787   # in a second terminal
+WEBHOOK_PUBLIC_URL=https://<tunnel-host> node scripts/webhook-test.ts
+```
 
 ## Why this team
 

@@ -91,10 +91,10 @@ async function watch(id: string, stopOn: string[], timeoutMs: number, everyMs: n
   return { seen, last };
 }
 
-async function transition(id: string, next_status: string, failure_type?: string) {
+async function transition(id: string, next_status: string, failure_type?: string, quiet = false) {
   const body = failure_type ? { next_status, failure_type } : { next_status };
   const r = await api(`transition ${next_status}`, "POST", `/api/v1/simulation/transfers/${id}/transition`, body);
-  if (r.status >= 300) console.log(`      transition → ${next_status}: ${errText(r)}`);
+  if (r.status >= 300 && !quiet) console.log(`      transition → ${next_status}: ${errText(r)}`);
   return r;
 }
 
@@ -104,9 +104,11 @@ async function driveTo(id: string, target: "PROCESSING" | "SENT" | "PAID") {
   let st = (await getTransfer(id))?.status;
   while (chain.indexOf(st) >= 0 && chain.indexOf(st) < chain.indexOf(target)) {
     const next = chain[chain.indexOf(st) + 1];
-    const r = await transition(id, next);
-    if (r.status >= 300) return st;
-    st = (await getTransfer(id))?.status;
+    const r = await transition(id, next, undefined, true);
+    const now = (await getTransfer(id))?.status;
+    // The sandbox moves SCHEDULED → PROCESSING by itself within ~0.3 s; a refused step is fine if the status moved on.
+    if (r.status >= 300 && chain.indexOf(now) <= chain.indexOf(st)) return now;
+    st = now;
   }
   return st;
 }
