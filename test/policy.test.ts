@@ -111,3 +111,15 @@ test("contradictory evidence → escalate", () => {
   assert.equal(d.action, "ESCALATE");
   assert.match(d.reason, /contradictory/);
 });
+
+test("looked up by request_id and not found → re-send with the same request_id", () => {
+  const d = decide(inc({ original: null, lookedUp: true }));
+  assert.equal(d.action, "RETRY_CREATE");
+  assert.match(d.reason, /same request_id/);
+});
+
+test("a replacement that is locked but was never created → create it with the same request_id", () => {
+  const rid = replacementRequestId(ids.B);
+  assert.equal(decide(inc({ replacement: { requestId: rid, view: null, lookedUp: true } })).action, "RETRY_CREATE");
+  assert.equal(decide(inc({ replacement: { requestId: rid, view: null } })).action, "LOOK_UP");
+});

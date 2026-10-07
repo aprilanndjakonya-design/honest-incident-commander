@@ -4,7 +4,7 @@
 import { classify } from "./failures.ts";
 import type { TransferView } from "./view.ts";
 
-export type Action = "LOOK_UP" | "WAIT" | "CONFIRM_PAID" | "REPLACE" | "ASK_FOR_DETAILS" | "ESCALATE";
+export type Action = "LOOK_UP" | "RETRY_CREATE" | "WAIT" | "CONFIRM_PAID" | "REPLACE" | "ASK_FOR_DETAILS" | "ESCALATE";
 
 export interface Decision {
   action: Action;
@@ -16,7 +16,9 @@ export interface Decision {
 export interface Incident {
   key: string; // the original transfer id, or its request_id while the id is unknown
   original: TransferView | null; // null: the create call timed out and the outcome is unknown
-  replacement: { requestId: string; view: TransferView | null } | null; // from the replacement lock
+  lookedUp?: boolean; // the transfer was searched for by request_id and not found
+  // From the replacement lock. lookedUp: searched for by its request_id; a null view then means "never created".
+  replacement: { requestId: string; view: TransferView | null; lookedUp?: boolean } | null;
   amount: number;
   now: string;
   maxTransitHours?: number;
@@ -31,6 +33,13 @@ export function decide(inc: Incident): Decision {
   if (inc.replacement) return decideReplacement(inc);
   const v = inc.original;
   if (!v || v.status === null) {
+    if (inc.lookedUp) {
+      return {
+        action: "RETRY_CREATE",
+        reason: "no transfer has this request_id: re-send with the same request_id; Airwallex refuses a duplicate",
+        cites: [],
+      };
+    }
     return {
       action: "LOOK_UP",
       reason: "outcome unknown: look the transfer up by request_id or re-send with the same request_id, never a new one",
@@ -92,6 +101,13 @@ export function decide(inc: Incident): Decision {
 function decideReplacement(inc: Incident): Decision {
   const r = inc.replacement!;
   if (!r.view || r.view.status === null) {
+    if (r.lookedUp) {
+      return {
+        action: "RETRY_CREATE",
+        reason: `replacement ${r.requestId} is locked but was never created: create it with that same request_id`,
+        cites: [],
+      };
+    }
     return { action: "LOOK_UP", reason: `replacement ${r.requestId}: outcome unknown, look it up by its request_id`, cites: [] };
   }
   const d = decide({ ...inc, key: r.view.id, original: r.view, replacement: null });

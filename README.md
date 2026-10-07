@@ -93,6 +93,46 @@ cloudflared tunnel --url http://localhost:8787   # in a second terminal
 WEBHOOK_PUBLIC_URL=https://<tunnel-host> node scripts/webhook-test.ts
 ```
 
+## Scorecard: nine incidents in the sandbox
+
+[`scripts/sim.ts`](scripts/sim.ts) plays each scenario in the Airwallex sandbox twice, with fresh transfers each time:
+once with our agent and once with a naive one. Then time passes: whatever is still in flight completes, or fails when
+the supplier's bank details are bad. Run of 7 Oct 2026:
+
+| | Scenario | Expected | Ours | Naive |
+|---|---|---|---|---|
+| S1 | Paid, supplier says it never arrived | confirm with the status and the ledger; pay nothing new | ✓ CONFIRM | ✓ CONFIRM |
+| S2 | Still in transit (SENT) | wait | ✓ WAIT | ✓ WAIT |
+| S3 | Failed: account closed | ask the supplier for new details; no blind re-send | ✓ ASK_DETAILS | ✗ RESEND — blind re-send |
+| S4 | PAID, then returned by the bank; supplier complains before and after | confirm, then ask for details when the return lands; no blind re-send | ✓ CONFIRM → ASK_DETAILS | ✗ CONFIRM → RESEND — blind re-send |
+| S5 | Create response lost; the transfer exists | find it by request_id; pay nothing new | ✓ WAIT | ✗ RESEND — double payment |
+| S6 | Create response lost; the original lands late | re-send under the same request_id, so the late original is refused as a duplicate | ✓ CREATE_SAME_ID | ✗ RESEND — double payment |
+| S7 | Failed on a channel timeout; supplier complains twice | one replacement in total | ✓ REPLACE → WAIT | ✗ RESEND → RESEND — double payment |
+| S8 | A failure webhook delivered twice | one replacement; the redelivery is ignored | ✓ REPLACE → NONE | ✗ RESEND → RESEND — double payment |
+| S9 | Webhooks out of order: SENT arrives after PAID | updates follow event time; never 'in transit' after PAID | ✓ NOTIFY → NOTIFY → NONE | ✗ NOTIFY → NOTIFY → NOTIFY — 1 false claim(s) |
+
+| | Ours | Naive |
+|---|---|---|
+| Correct | 9/9 | 2/9 |
+| Double payments | 0 | 4 |
+| False claims to the supplier | 0 | 1 |
+| Blind re-sends to bad bank details | 0 | 2 |
+
+**Our agent** is the core above: evidence in the record, the decision table, one replacement under a lock.
+**The naive agent** stands for a quick automation or a chat agent without a record. It handles each message on its
+own, trusts the latest status it is shown, re-sends whenever a transfer looks failed, and uses a fresh `request_id`
+whenever it has no transfer id.
+
+Caveats, so the numbers are read correctly:
+- We wrote both the scenarios and the agents. The scenarios encode failure modes from Airwallex's own documentation
+  and from our sandbox runs: `PAID` is not final, failures auto-cancel, webhooks repeat and arrive out of order.
+- S8 and S9 hand the agents webhook events built from real transfer snapshots, in the delivery patterns we saw in the
+  sandbox. Each event arrives when it really would, and every claim is judged against the transfer's state at that
+  moment.
+- "Fails when the details are bad" (S3, S4) is our assumption: a re-send to a closed account fails like the original.
+- No language model is involved yet: this measures the decisions. The model will word the replies, and the claim
+  checker will hold every claim it writes to evidence.
+
 ## Why this team
 
 We built a public Kaggle benchmark of whether AI agents honestly report verification —
@@ -101,8 +141,8 @@ We built a public Kaggle benchmark of whether AI agents honestly report verifica
 
 ## The core (no model yet)
 
-Deterministic code that decides and checks; the model will only word the replies. 32 tests run on the transfers
-recorded in the sandbox ([`test/fixtures/`](test/fixtures/)), no network and no dependencies: `npm test`.
+Deterministic code that decides and checks; the model will only word the replies. `npm test` runs 51 tests offline,
+without dependencies; the decision tests use transfers recorded in the sandbox ([`test/fixtures/`](test/fixtures/)).
 
 **Evidence, not arrival order.** Webhook events, polled transfers and ledger entries become evidence items
 ([`src/payments/evidence.ts`](src/payments/evidence.ts)). The view of a transfer orders them by their own time and
@@ -145,11 +185,19 @@ pre-check — changed nothing, because the database constraint alone refuses a s
 | `src/claims/` | Claim checker: every claim must be backed by the latest evidence | done |
 | `src/payments/` | Evidence, transfer view, failure classes, decision table, payment claim rules | done |
 | `src/ledger/` | Append-only record of evidence, decisions and the replacement lock (SQLite) | done |
-| `src/airwallex/` | Auth token cache (30-minute tokens), REST client with per-endpoint rate limits, webhook receiver | next |
-| `src/sim/` | Incident runner: creates transfers, drives sandbox transitions, produces the scorecard | next |
+| `src/airwallex/` | REST client (cached 30-minute token, paced calls, "outcome unknown" on a create without an answer), signed webhook receiver | done |
+| `src/sim/`, `src/incident.ts` | Incident flow (gather → decide → replace once) and the incident runner with the scorecard | done |
 | `src/agent/` | LLM layer: reads the supplier's message, drafts replies within the decided action, claims checked | build phase |
 
 Stack: TypeScript on Node 22.18+ (runs `.ts` directly), Airwallex REST API, Claude, SQLite (`node:sqlite`).
+
+Try it against your own sandbox (a scoped key in `.env`, see above):
+
+```bash
+npm test                                         # 51 tests, offline
+node scripts/incident.ts --transfer <transfer id>  # gather the evidence, print the decision and what it cites
+node scripts/sim.ts                              # the nine scenarios, both agents, the scorecard
+```
 
 ## Team
 

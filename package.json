@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json",
-    "smoke": "node scripts/sandbox-smoke.ts"
+    "smoke": "node scripts/sandbox-smoke.ts",
+    "incident": "node scripts/incident.ts"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",

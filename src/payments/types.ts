@@ -22,6 +22,12 @@ export interface TransferSnapshot {
   transfer_amount?: number;
   transfer_currency?: string;
   failure?: Failure | null;
+  // what a replacement copies
+  beneficiary_id?: string;
+  source_currency?: string;
+  transfer_method?: string;
+  reason?: string;
+  reference?: string;
 }
 
 // Webhook envelope as delivered by the sandbox (API version 2026-08-21).

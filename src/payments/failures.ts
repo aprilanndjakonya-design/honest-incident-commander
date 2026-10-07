@@ -9,13 +9,27 @@ import type { Failure } from "./types.ts";
 
 export type FailureClass = "DETAILS" | "RETRY" | "STOP" | "UNKNOWN";
 
-// Codes seen in the sandbox on 7 Oct 2026. There `details.type` is always INCORRECT_ROUTING whatever failure_type
-// the simulation was given, so the code and the message are read first.
-const BY_CODE: Record<string, string> = {
+// Codes the sandbox returned on 7 Oct 2026, one transfer per failure_type (scripts/sandbox-smoke.ts and a probe).
+// There `details.type` is always INCORRECT_ROUTING whatever failure_type the simulation was given, so the code and the
+// message are read first.
+export const SANDBOX_FAILURE_CODES: Record<string, string> = {
+  "90101": "INVALID_ACCOUNT_NAME_OR_NUMBER", // "Invalid account name/number"
+  "90301": "BENEFICIARY_NAME_MISMATCH",
+  "90302": "ACCOUNT_CURRENCY_MISMATCH",
+  "90501": "CHANNEL_POLICY",
   "90701": "ACCOUNT_CLOSED",
+  "90702": "ACCOUNT_INACTIVE_OR_DORMANT",
+  "90703": "ACCOUNT_UNDER_RESTRICTION",
+  "90801": "BENEFICIARY_REQUESTED",
   "90802": "BENEFICIARY_BANK_RETURNED",
-  "99902": "OTHER",
+  "91001": "RECALL_REQUESTED",
+  "91002": "CLIENT_REQUESTED",
+  "91201": "CARD_ISSUER_ERROR",
+  "91301": "DUPLICATION_RETURN",
+  "91402": "CHANNEL_TIMEOUT",
+  "99902": "OTHER", // FAILED without a failure_type
 };
+const BY_CODE = SANDBOX_FAILURE_CODES;
 
 const BY_MESSAGE: [RegExp, string][] = [
   [/account closed/i, "ACCOUNT_CLOSED"],
