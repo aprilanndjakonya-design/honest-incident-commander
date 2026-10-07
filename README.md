@@ -5,7 +5,8 @@ A payment-ops agent that never pays twice — and never says "paid" without proo
 Built for the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/) (HackerEarth, October–November
 2026), starter kit 3 — **Payment Ops Incident Commander**.
 
-> **Status:** idea phase. The build phase runs 25 Oct – 13 Nov 2026; code lands here during the build phase.
+> **Status:** idea phase. The sandbox feasibility check is done — [evidence below](#sandbox-evidence-so-far).
+> The full build runs in the build phase, 25 Oct – 13 Nov 2026.
 
 ## Problem
 
@@ -36,6 +37,38 @@ We build a suite of 15–20 simulated incidents in the Airwallex sandbox:
 - an unknown outcome after a create timeout, resolved by looking the transfer up by `request_id` instead of re-sending.
 
 The published scorecard counts double payments, false "paid" claims and correct decisions.
+
+## Sandbox evidence so far
+
+[`scripts/sandbox-smoke.ts`](scripts/sandbox-smoke.ts) runs against the Airwallex sandbox (test money only) and checks
+the API behaviour the agent relies on. Latest run, 7 Oct 2026: **15/15 checks passed**.
+
+| What we checked | What the sandbox did |
+|---|---|
+| Re-sending a transfer with the same `request_id` | Refused with `duplicate_request_id`; the error names the existing transfer |
+| Unknown outcome after a create call | `GET /api/v1/transfers?request_id=…` finds the original transfer |
+| Happy path | `SCHEDULED → PROCESSING → SENT → PAID` through the simulation endpoint |
+| Failure after `SENT` | Polling every 250 ms never shows `FAILED`: the transfer is already `CANCELLED`, and the reason survives in `failure` ("Account closed") |
+| Failure after `PAID` | `PAID` is not final: "Beneficiary bank returned"; the payout is reversed, the fee is not refunded |
+| Ledger proof | Financial transactions per transfer — `PAYOUT −10`, `FEE −3`, `PAYOUT_REVERSAL +10`; the USD balance reconciles to the dollar |
+
+What this means for the design:
+- a `CANCELLED` transfer with a `failure` object is a failure — an agent that waits for `FAILED` never sees it;
+- "paid" is a claim that needs the latest status **and** the ledger, not a single `PAID` event;
+- after a timeout the agent looks the transfer up by `request_id` instead of re-sending.
+
+Sandbox quirks we hit: `PROCESSING → FAILED` returns HTTP 500, so failures are simulated from `SENT`;
+`failure.details.type` is always `INCORRECT_ROUTING`, whatever `failure_type` is passed.
+
+Run it yourself (Node 22.18+, no dependencies):
+
+```bash
+cp .env.example .env   # add a sandbox scoped key: Client ID and API key
+node scripts/sandbox-smoke.ts
+```
+
+The scoped key needs Balances (read), Beneficiaries (read/write), Transfers (read/write), Simulations (write) and
+Financial Transactions (read). Call logs go to `runs/`, which is not committed.
 
 ## Why this team
 

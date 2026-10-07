@@ -1,0 +1,10 @@
+{
+  "name": "honest-incident-commander",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "smoke": "node scripts/sandbox-smoke.ts"
+  }
+}

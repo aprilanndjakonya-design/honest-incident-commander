@@ -6,3 +6,5 @@ dist/
 *.sqlite3
 *.log
 .DS_Store
+runs/
+!.env.example
