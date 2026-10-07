@@ -99,18 +99,57 @@ We built a public Kaggle benchmark of whether AI agents honestly report verifica
 [`verification_honesty`](https://www.kaggle.com/benchmarks/tasks/denisbardin26/verification-honesty): 48 scenarios,
 12 models. This project applies the same discipline to money movement.
 
-## Planned architecture
+## The core (no model yet)
 
-| Module | Role |
+Deterministic code that decides and checks; the model will only word the replies. 32 tests run on the transfers
+recorded in the sandbox ([`test/fixtures/`](test/fixtures/)), no network and no dependencies: `npm test`.
+
+**Evidence, not arrival order.** Webhook events, polled transfers and ledger entries become evidence items
+([`src/payments/evidence.ts`](src/payments/evidence.ts)). The view of a transfer orders them by their own time and
+breaks same-second ties by the lifecycle (FAILED → CANCELLED land in the same second), merges redeliveries, and flags
+evidence that goes backwards in time ([`src/payments/view.ts`](src/payments/view.ts)).
+
+**Decisions** ([`src/payments/policy.ts`](src/payments/policy.ts)):
+
+| What the evidence shows | Action |
 |---|---|
-| `airwallex/` | Auth token cache (30-minute tokens), REST client with per-endpoint rate limits |
-| `ledger/` | Append-only local store of transfers, events and locks (SQLite) |
-| `policy/` | Deterministic state machine, decision table, duplicate lock |
-| `agent/` | LLM layer: reads the supplier's message, picks an action allowed by the policy, drafts replies |
-| `claims/` | Claim checker: every status claim must be backed by the latest evidence |
-| `sim/` | Incident runner: creates transfers, drives sandbox status transitions, produces the scorecard |
+| The create call timed out; no transfer found yet | `LOOK_UP` by `request_id`, or re-send with the same `request_id` — never a new one |
+| `SCHEDULED` / `PROCESSING` / `SENT`, up to 72 h | `WAIT` |
+| In transit for longer than 72 h; funding `OVERDUE` | `ESCALATE` |
+| `PAID` and a settled, un-reversed payout in the ledger | `CONFIRM_PAID`, citing both |
+| `PAID` but no payout in the ledger | `ESCALATE` |
+| `FAILED` not yet cancelled, or cancelled but the funds are not back | `WAIT` — replacing now could pay twice |
+| Failed on bank details (account closed, returned by the bank, name mismatch…) | `ASK_FOR_DETAILS` |
+| Failed on a transient channel error, funds back, no replacement yet | `REPLACE` once, `request_id` = `hic-r-<original id>` |
+| Failed on request, restriction, duplication — or for a reason we do not recognise | `ESCALATE` |
+| A replacement already exists | follow the replacement; never replace again |
+| Evidence contradicts itself | `ESCALATE` |
 
-Stack: TypeScript, Airwallex REST API and developer MCP, Claude, SQLite.
+**Claims** ([`src/claims/`](src/claims/index.ts), domain-free; payment rules in
+[`src/payments/claim-rules.ts`](src/payments/claim-rules.ts)). A reply may say "paid" only if it cites the latest
+`PAID` status **and** the ledger payout; "in transit", "failed", "refunded" and "replaced" each need their own
+evidence. Unknown claims, missing citations and stale citations are refused. A free-text check flags claim words that
+no structured claim backs ("your invoice has been paid") and ignores negations ("has not been paid yet").
+
+**Record** ([`src/ledger/store.ts`](src/ledger/store.ts)) — SQLite built into Node: append-only (triggers refuse
+UPDATE and DELETE), redelivered webhooks are stored once, and the replacement lock is a row keyed by the incident, so
+"replace at most once" survives a restart.
+
+To check that the tests can fail, we broke six rules one at a time: five broke a test. The sixth — dropping the lock's
+pre-check — changed nothing, because the database constraint alone refuses a second replacement.
+
+## Architecture
+
+| Module | Role | Status |
+|---|---|---|
+| `src/claims/` | Claim checker: every claim must be backed by the latest evidence | done |
+| `src/payments/` | Evidence, transfer view, failure classes, decision table, payment claim rules | done |
+| `src/ledger/` | Append-only record of evidence, decisions and the replacement lock (SQLite) | done |
+| `src/airwallex/` | Auth token cache (30-minute tokens), REST client with per-endpoint rate limits, webhook receiver | next |
+| `src/sim/` | Incident runner: creates transfers, drives sandbox transitions, produces the scorecard | next |
+| `src/agent/` | LLM layer: reads the supplier's message, drafts replies within the decided action, claims checked | build phase |
+
+Stack: TypeScript on Node 22.18+ (runs `.ts` directly), Airwallex REST API, Claude, SQLite (`node:sqlite`).
 
 ## Team
 
