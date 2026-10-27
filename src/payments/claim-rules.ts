@@ -1,6 +1,6 @@
 // What a payment-ops reply may claim, and what each claim must cite.
 
-import type { Claim, Evidence, Rule, Verdict } from "../claims/index.ts";
+import { checkClaims, type Claim, type Evidence, type Rule, type Verdict } from "../claims/index.ts";
 import { viewOf, type TransferView } from "./view.ts";
 
 const ok = (claim: Claim): Verdict => ({ claim, ok: true });
@@ -57,3 +57,21 @@ export const paymentLexicon: Record<string, RegExp> = {
   refunded: /\b(?:refunded|reversed|returned to (?:our|your) (?:account|balance))\b/i,
   replaced: /\b(?:re-?sent|replacement transfer|sent (?:it )?again|new transfer)\b/i,
 };
+
+// The claims the evidence supports right now, each with the citations its rule needs. A drafting model chooses among
+// these; whatever else it writes is checked against the same rules and refused.
+export function supportedClaims(subjects: string[], evidence: Evidence[]): Claim[] {
+  const out: Claim[] = [];
+  for (const subject of subjects) {
+    const v = viewOf(subject, evidence);
+    const candidates: Claim[] = [
+      { kind: "paid", subject, cites: [v.statusEvidence ?? "", ...v.ledger.payoutEvidence].filter(Boolean) },
+      { kind: "in_transit", subject, cites: v.statusEvidence ? [v.statusEvidence] : [] },
+      { kind: "failed", subject, cites: v.failureEvidence ? [v.failureEvidence] : [] },
+      { kind: "refunded", subject, cites: v.ledger.reversalEvidence },
+      { kind: "replaced", subject, cites: evidence.filter((e) => e.subject === subject && e.kind === "replacement").map((e) => e.id) },
+    ];
+    for (const verdict of checkClaims(candidates, evidence, paymentRules).verdicts) if (verdict.ok) out.push(verdict.claim);
+  }
+  return out;
+}

@@ -3,7 +3,7 @@
 
 import type { Store } from "./ledger/store.ts";
 import { fromLedger, fromSnapshot } from "./payments/evidence.ts";
-import { decide, type Decision } from "./payments/policy.ts";
+import { decide, withMessage, type Decision, type MessageFacts } from "./payments/policy.ts";
 import type { LedgerItem, TransferSnapshot } from "./payments/types.ts";
 import { viewOf, type TransferView } from "./payments/view.ts";
 
@@ -37,6 +37,7 @@ export async function investigate(opts: {
   amount: number;
   now?: string;
   maxTransitHours?: number;
+  message?: MessageFacts; // what the supplier's message says, if a message started this
 }): Promise<Report> {
   const now = opts.now ?? new Date().toISOString();
   let transfer: TransferSnapshot | null = null;
@@ -62,7 +63,7 @@ export async function investigate(opts: {
     replacement = { requestId: replacementRequestId, transfer: rt, view: rt ? await collect(opts.api, opts.store, rt, now) : null };
   }
 
-  const decision = decide({
+  const decision = withMessage(decide({
     key,
     original: view,
     lookedUp,
@@ -70,7 +71,7 @@ export async function investigate(opts: {
     amount: opts.amount,
     now,
     maxTransitHours: opts.maxTransitHours,
-  });
+  }), opts.message);
   opts.store.recordDecision(key, decision, now);
   return { key, transfer, view, replacement, decision };
 }

@@ -2,6 +2,7 @@
 
 import { readFileSync } from "node:fs";
 import type { Evidence } from "../src/claims/index.ts";
+import type { Api } from "../src/incident.ts";
 import { fromLedger, fromSnapshot, fromWebhook } from "../src/payments/evidence.ts";
 import type { LedgerItem, TransferSnapshot, TransferStatus } from "../src/payments/types.ts";
 
@@ -40,3 +41,34 @@ export function ledgerEntry(id: string, transferId: string, type: string, amount
 }
 
 export const hoursAfter = (iso: string, h: number) => new Date(Date.parse(iso) + h * 3_600_000).toISOString();
+
+// An in-memory Airwallex: transfers by id, the recorded ledger, and request_id idempotency on create.
+export function fakeApi(transfers: TransferSnapshot[]) {
+  const byId = new Map(transfers.map((t) => [t.id, t]));
+  const created: Record<string, unknown>[] = [];
+  const api: Api = {
+    async getTransfer(id) {
+      const t = byId.get(id);
+      return t ? { status: 200, data: t } : { status: 404, data: { code: "resource_not_found" } };
+    },
+    async findByRequestId(rid) {
+      return [...byId.values()].find((t) => t.request_id === rid) ?? null;
+    },
+    async ledger(id) {
+      return fx.ledger.filter((l) => l.source_id === id);
+    },
+    async createTransfer(body) {
+      const existing = [...byId.values()].find((t) => t.request_id === body.request_id);
+      if (existing) return { status: 400, data: { code: "duplicate_request_id", details: { id: existing.id, request_id: body.request_id } } };
+      created.push(body);
+      const t: TransferSnapshot = {
+        id: `new-${created.length}`, request_id: String(body.request_id), status: "SCHEDULED",
+        updated_at: "2026-10-07T12:00:00+0000", transfer_amount: 10, transfer_currency: "USD",
+      };
+      byId.set(t.id, t);
+      return { status: 201, data: t };
+    },
+  };
+  return { api, created, byId };
+}
+

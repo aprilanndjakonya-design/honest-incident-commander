@@ -1,43 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { investigate, replace, type Api } from "../src/incident.ts";
+import { investigate, replace } from "../src/incident.ts";
 import { Store } from "../src/ledger/store.ts";
 import { replacementRequestId } from "../src/payments/policy.ts";
 import type { TransferSnapshot } from "../src/payments/types.ts";
-import { fx, ids } from "./helpers.ts";
+import { fakeApi, fx, ids } from "./helpers.ts";
 
 const NOW = "2026-10-07T12:00:00.000Z";
 const final = (tag: "A" | "B" | "C") => fx.transfers[tag].at(-1)!;
-
-// An in-memory Airwallex: transfers by id, the recorded ledger, and request_id idempotency on create.
-function fakeApi(transfers: TransferSnapshot[]) {
-  const byId = new Map(transfers.map((t) => [t.id, t]));
-  const created: Record<string, unknown>[] = [];
-  const api: Api = {
-    async getTransfer(id) {
-      const t = byId.get(id);
-      return t ? { status: 200, data: t } : { status: 404, data: { code: "resource_not_found" } };
-    },
-    async findByRequestId(rid) {
-      return [...byId.values()].find((t) => t.request_id === rid) ?? null;
-    },
-    async ledger(id) {
-      return fx.ledger.filter((l) => l.source_id === id);
-    },
-    async createTransfer(body) {
-      const existing = [...byId.values()].find((t) => t.request_id === body.request_id);
-      if (existing) return { status: 400, data: { code: "duplicate_request_id", details: { id: existing.id, request_id: body.request_id } } };
-      created.push(body);
-      const t: TransferSnapshot = {
-        id: `new-${created.length}`, request_id: String(body.request_id), status: "SCHEDULED",
-        updated_at: "2026-10-07T12:00:00+0000", transfer_amount: 10, transfer_currency: "USD",
-      };
-      byId.set(t.id, t);
-      return { status: 201, data: t };
-    },
-  };
-  return { api, created, byId };
-}
 
 // B's final state, but failed on a channel timeout: the one failure class that allows a replacement.
 const timedOut: TransferSnapshot = {

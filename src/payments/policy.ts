@@ -97,6 +97,29 @@ export function decide(inc: Incident): Decision {
   return { action: "WAIT", reason: `in transit: ${v.status} since ${v.statusAt}`, cites };
 }
 
+// What the supplier's message changes, as facts read from it (src/agent/intake.ts). Bank details that arrive in a
+// message are never used to pay: a changed account is the classic invoice-fraud move, so a person verifies it through
+// a contact already on file. Pressure or instructions in a message change nothing.
+// A message nobody could read (the model failed or the budget ran out) blocks any payment until a person reads it.
+export interface MessageFacts {
+  newBankDetails: boolean;
+  unread?: boolean;
+}
+
+export function withMessage(d: Decision, m: MessageFacts | undefined): Decision {
+  if (m?.newBankDetails) {
+    return {
+      action: "ESCALATE",
+      reason: `new bank details arrived in a message: verify them through a contact on file before any payment (the evidence alone said ${d.action}: ${d.reason})`,
+      cites: d.cites,
+    };
+  }
+  if (m?.unread && (d.action === "REPLACE" || d.action === "RETRY_CREATE")) {
+    return { action: "ESCALATE", reason: `the supplier's message could not be read: a person reads it before any payment (the evidence alone said ${d.action}: ${d.reason})`, cites: d.cites };
+  }
+  return d;
+}
+
 // Once a replacement exists, the incident follows the replacement — and never replaces again.
 function decideReplacement(inc: Incident): Decision {
   const r = inc.replacement!;
