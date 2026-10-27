@@ -1,27 +1,30 @@
 // Incident runner: plays every scenario in the Airwallex sandbox once per agent, each time with fresh transfers, and
 // prints the scorecard. Sandbox only, test money only.
 //
-// Usage: node scripts/sim.ts [S1,S5,...] [--model] [--agents ours,naive,claude]
+// Usage: node scripts/sim.ts [S1,S5,...] [--model] [--ours-model <id>] [--agents ours,naive,claude,claude-policy]
 //   --model   our agent reads the supplier's messages and words its replies with Claude (OPENROUTER_API_KEY or
 //             ANTHROPIC_API_KEY in .env; spend is capped by LLM_BUDGET_USD, default $20, see runs/llm-spend.json)
-//   --agents  which agents play (default ours,naive); "claude" is the same model with the same tools and no core
+//   --ours-model  another model for our agent only (the judge and the other agents keep the default)
+//   --agents  which agents play (default ours,naive); "claude" is the same model with the same tools and no core;
+//             "claude-policy" is that agent with our decision table in its prompt
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { AirwallexClient } from "../src/airwallex/client.ts";
 import { modelFromEnv } from "../src/agent/model.ts";
 import { loadEnv } from "../src/env.ts";
 import { NaiveAgent, OurAgent, type Agent, type Invoice } from "../src/sim/agents.ts";
+import { parseSimArgs } from "../src/sim/args.ts";
 import { ClaudeAloneAgent } from "../src/sim/claude-alone.ts";
 import { runScenario, scenarios, type Ctx, type Result } from "../src/sim/scenarios.ts";
 
-const args = process.argv.slice(2);
-const agentsArg = args.indexOf("--agents");
-const names = agentsArg >= 0 ? args[agentsArg + 1].split(",") : ["ours", "naive"];
-const only = args.find((a, i) => !a.startsWith("--") && i !== agentsArg + 1)?.split(",");
+const opts = parseSimArgs(process.argv.slice(2));
+const names = opts.agents;
+const only = opts.only;
 const env = loadEnv();
-const needsModel = args.includes("--model") || names.includes("claude");
+const needsModel = opts.model || names.some((n) => n.startsWith("claude"));
 const model = needsModel ? modelFromEnv(env) : null;
 if (needsModel && !model) throw new Error("no OPENROUTER_API_KEY or ANTHROPIC_API_KEY in .env");
+const oursModel = opts.oursModel ? modelFromEnv({ ...env, LLM_MODEL: opts.oursModel }) : model;
 const spentBefore = model?.meter.spent() ?? 0;
 const api = new AirwallexClient({ clientId: env.AIRWALLEX_CLIENT_ID, apiKey: env.AIRWALLEX_API_KEY });
 const runId = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(2, 14);
@@ -46,36 +49,40 @@ const ctx: Ctx = { api, beneficiaryId: ben.data.id, runId, judgeModel: model ?? 
 const results: Result[] = [];
 const errors: { scenario: string; agent: string; error: string }[] = [];
 const MAKERS: Record<string, () => Agent> = {
-  ours: () => new OurAgent(api, args.includes("--model") ? model : null),
+  ours: () => new OurAgent(api, opts.model ? oursModel : null),
   naive: () => new NaiveAgent(api),
   claude: () => new ClaudeAloneAgent(api, model!),
+  "claude-policy": () => new ClaudeAloneAgent(api, model!, { policy: true }),
 };
-const LABEL: Record<string, string> = { ours: "Ours", naive: "Naive script", claude: "Claude alone" };
+const LABEL: Record<string, string> = { ours: "Ours", naive: "Naive script", claude: "Claude alone", "claude-policy": "Claude + policy prompt" };
+const TAG: Record<string, string> = { ours: "o", naive: "n", claude: "c", "claude-policy": "p" }; // in request_ids and references
+const unknownAgents = names.filter((n) => !MAKERS[n]);
+if (unknownAgents.length) throw new Error(`unknown agent(s): ${unknownAgents.join(", ")}; known: ${Object.keys(MAKERS).join(", ")}`);
 const makers = names.map((n) => [n, MAKERS[n]] as [string, () => Agent]);
 for (const sc of scenarios.filter((s) => !only || only.includes(s.id))) {
   for (const [name, make] of makers) {
     const agent = make();
     const inv: Invoice = {
       key: `${sc.id}-${name}`,
-      requestId: `hic-sim-${runId}-${sc.id}-${name[0]}`,
+      requestId: `hic-sim-${runId}-${sc.id}-${TAG[name]}`,
       transferId: null,
       beneficiaryId: ctx.beneficiaryId,
       amount: 10,
-      reference: `INV ${sc.id}${name[0].toUpperCase()}`,
+      reference: `INV ${sc.id}${TAG[name].toUpperCase()}`,
     };
     try {
       let r: Result;
       try {
         r = await runScenario(ctx, sc, agent, inv);
       } catch (err) {
-        console.log(`${sc.id} ${name.padEnd(5)} ERROR ${(err as Error).message.slice(0, 200)}`);
+        console.log(`${sc.id} ${name.padEnd(6)} ERROR ${(err as Error).message.slice(0, 200)}`);
         errors.push({ scenario: sc.id, agent: name, error: (err as Error).message });
         continue;
       }
       results.push(r);
       const acts = r.replies.map((x) => x.action + (x.falseClaims.length ? `(false: ${x.falseClaims.join("+")})` : "")).join(" → ");
       console.log(`${sc.id} ${name.padEnd(6)} ${r.correct ? "ok   " : "WRONG"} paid ${r.paid}, created ${r.created} | ${acts}`);
-      for (const x of r.replies.filter((x) => x.text && (x.model || name === "claude"))) {
+      for (const x of r.replies.filter((x) => x.text && (x.model || name.startsWith("claude")))) {
         const m = x.model;
         const tags = m ? `[${m.source}${m.refused ? `, ${m.refused} draft(s) refused by the checker` : ""}${m.newBankDetails ? ", new bank details seen" : ""}${m.instructions ? `, ${m.instructions} injection attempt(s) ignored` : ""}] ` : "";
         console.log(`      ${tags}${x.text.replace(/\s+/g, " ").slice(0, 220)}`);
@@ -128,7 +135,7 @@ const md = [
   row("False claims to the supplier", (x) => x.falseClaims),
   row("Re-sends policy forbids (bad bank details, a recall)", (x) => x.blindResends),
   ...(errors.length ? ["", `Run errors (not scored): ${errors.map((e) => `${e.scenario} ${e.agent}: ${e.error.slice(0, 120)}`).join("; ")}`] : []),
-  ...(model && args.includes("--model") ? ["", `Our agent's replies: ${drafts.model} worded by ${model.model}, ${drafts.template} from templates; ${drafts.refused} model draft(s) refused by the claim checker.`] : []),
+  ...(model && opts.model ? ["", `Our agent's replies: ${drafts.model} worded by ${oursModel!.model}, ${drafts.template} from templates; ${drafts.refused} model draft(s) refused by the claim checker.`] : []),
   ...(model ? [`Model spend this run: $${(model.meter.spent() - spentBefore).toFixed(4)}.`] : []),
 ].join("\n");
 
