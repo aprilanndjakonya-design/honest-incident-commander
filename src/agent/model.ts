@@ -72,22 +72,27 @@ export class ClaudeModel implements Model {
   }
 
   async json<T>(req: JsonRequest): Promise<T> {
-    this.meter.check();
-    const r = await this.client.messages.create({
-      model: this.model,
+    const r = await this.message(req.purpose, {
       max_tokens: req.maxTokens ?? 4000,
       system: req.system,
       messages: [{ role: "user", content: req.user }],
       output_config: { effort: req.effort ?? "low", format: { type: "json_schema", schema: req.schema } },
     });
-    const u = r.usage as typeof r.usage & { cost?: number };
-    const [pin, pout] = PRICES[this.model] ?? [4, 20];
-    const usd = typeof u.cost === "number" ? u.cost : (u.input_tokens * pin + u.output_tokens * pout) / 1e6;
-    this.meter.add(usd, { purpose: req.purpose, model: this.model, input: u.input_tokens, output: u.output_tokens, stop: r.stop_reason });
     if (r.stop_reason === "refusal") throw new ModelRefusedError(`${req.purpose}: the model declined`);
     if (r.stop_reason === "max_tokens") throw new Error(`${req.purpose}: the answer hit max_tokens`);
     const text = r.content.map((b) => (b.type === "text" ? b.text : "")).join("");
     return JSON.parse(text) as T;
+  }
+
+  // One metered call with any parameters (tool use, multi-turn); the budget is checked before it is sent.
+  async message(purpose: string, params: Omit<Anthropic.MessageCreateParamsNonStreaming, "model">): Promise<Anthropic.Message> {
+    this.meter.check();
+    const r = await this.client.messages.create({ ...params, model: this.model });
+    const u = r.usage as typeof r.usage & { cost?: number };
+    const [pin, pout] = PRICES[this.model] ?? [4, 20];
+    const usd = typeof u.cost === "number" ? u.cost : (u.input_tokens * pin + u.output_tokens * pout) / 1e6;
+    this.meter.add(usd, { purpose, model: this.model, input: u.input_tokens, output: u.output_tokens, stop: r.stop_reason });
+    return r;
   }
 }
 

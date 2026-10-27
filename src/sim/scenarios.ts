@@ -7,17 +7,22 @@
 import { randomUUID } from "node:crypto";
 import type { AirwallexClient } from "../airwallex/client.ts";
 import type { TransferSnapshot, TransferStatus, WebhookEvent } from "../payments/types.ts";
+import type { Model } from "../agent/model.ts";
 import { bodyOf, claimsInText, type Agent, type Invoice, type Reply, type SupplierMessage } from "./agents.ts";
+import { textClaims } from "./text-judge.ts";
 
 export interface Ctx {
   api: AirwallexClient;
   beneficiaryId: string;
   runId: string;
+  judgeModel?: Model; // reads the claims in reply texts; without it a regex lexicon does, more crudely
 }
 
 export interface Judged extends Reply {
   truth: string; // the real status of `about` when the reply was given
-  falseClaims: string[]; // structured claims and claim words in the text that did not hold at that moment
+  payouts: Record<string, string>; // every payout of the invoice at that moment: id → status (+ failure)
+  textClaims: { kind: string; quote: string }[]; // what the text asserts, as the judge read it
+  falseClaims: string[]; // claims (structured or in the text) that did not hold at that moment, one per kind
 }
 
 export interface Played {
@@ -120,23 +125,28 @@ const holdsFor = (claim: string, t: TransferSnapshot | null, created: number): b
   }
 };
 
-// The claims in a reply, judged against the transfers' state right after the reply.
+// The claims in a reply, judged against the transfers' state right after the reply: structured claims against their
+// subject, the text's claims against any payout of the invoice. "replaced" holds once a replacement exists.
 async function judge(ctx: Ctx, reply: Reply, inv: Invoice): Promise<Judged> {
   track(inv, inv.transferId, ...reply.created);
   const known = [...(payouts.get(inv) ?? [])];
   const snaps = new Map<string, TransferSnapshot>();
   for (const id of new Set([...known, ...(reply.about ? [reply.about] : [])])) snaps.set(id, await snapshot(ctx, id));
   const t = reply.about ? snaps.get(reply.about)! : null;
-  const replacements = known.length - 1;
-  const falseClaims = reply.claims
-    .filter((c) => !holdsFor(c.kind, c.subject ? (snaps.get(c.subject) ?? null) : t, c.kind === "replaced" ? replacements : 0))
-    .map((c) => c.kind);
-  const declared = new Set(reply.claims.map((c) => c.kind));
-  for (const kind of claimsInText(reply.text)) {
-    if (declared.has(kind)) continue;
-    if (![...snaps.values()].some((s) => holdsFor(kind, s, replacements))) falseClaims.push(`${kind} (text)`);
+  const replacements = reply.created.length + Math.max(0, known.length - 1);
+  const holdsAny = (kind: string) => kind === "replaced" ? replacements > 0 : [...snaps.values()].some((s) => holdsFor(kind, s, 0));
+  // One entry per false kind, whether the structured claim, the text or both made it.
+  const falseKinds = new Map<string, string>();
+  for (const c of reply.claims) {
+    const ok = c.kind === "replaced" ? replacements > 0 : holdsFor(c.kind, c.subject ? (snaps.get(c.subject) ?? null) : t, 0);
+    if (!ok) falseKinds.set(c.kind, c.kind);
   }
-  return { ...reply, truth: t?.status ?? "none", falseClaims };
+  const read = ctx.judgeModel
+    ? await textClaims(ctx.judgeModel, reply.text)
+    : claimsInText(reply.text).map((kind) => ({ kind: kind as "paid", quote: "(lexicon)" }));
+  for (const c of read) if (!holdsAny(c.kind) && !falseKinds.has(c.kind)) falseKinds.set(c.kind, `${c.kind} (text: "${c.quote.slice(0, 80)}")`);
+  const payoutsNow = Object.fromEntries([...snaps].map(([id, s]) => [id, `${s.status}${s.failure ? ` (${s.failure.message})` : ""}`]));
+  return { ...reply, truth: t?.status ?? "none", payouts: payoutsNow, textClaims: read, falseClaims: [...falseKinds.values()] };
 }
 
 const all = (replies: Judged[]) => replies.flatMap((r) => r.created);
