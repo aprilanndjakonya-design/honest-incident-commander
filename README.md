@@ -5,9 +5,34 @@ A payment-ops agent that never pays twice — and never says "paid" without proo
 Built for the [Airwallex Agentic Banking Hackathon](https://airwallex.hackerearth.com/) (HackerEarth, October–November
 2026), starter kit 3 — **Payment Ops Incident Commander**.
 
-> **Status:** shortlisted; build phase, 27 Oct – 13 Nov 2026. The core, the Claude layer and sixteen sandbox incidents
+> **Status:** shortlisted; build phase, 27 Oct – 15 Nov 2026. The core, the Claude layer and sixteen sandbox incidents
 > run today: two full runs of three agents, then two follow-up experiments —
 > [scorecard below](#scorecard-sixteen-incidents-three-agents).
+
+## Quick start
+
+Node 22.18+ (it runs the TypeScript sources directly) and an Airwallex **sandbox** account. Test money only.
+
+```bash
+git clone https://github.com/aprilanndjakonya-design/honest-incident-commander.git
+cd honest-incident-commander
+npm install          # one dependency: the Anthropic SDK
+npm test             # 64 tests, offline, no keys needed
+cp .env.example .env # add a sandbox scoped key: AIRWALLEX_CLIENT_ID and AIRWALLEX_API_KEY
+```
+
+Then, against your sandbox:
+
+```bash
+node scripts/incident.ts --transfer <transfer id>        # read-only: gather the evidence, print the decision and what it cites
+node scripts/sandbox-smoke.ts                            # the API behaviour we rely on: PAID, idempotency, recovery, failures
+node scripts/sim.ts                                      # sixteen incidents with fresh test transfers: ours vs a naive script
+node scripts/sim.ts --model --agents ours,claude,naive   # with Claude: ANTHROPIC_API_KEY or OPENROUTER_API_KEY in .env
+```
+
+The scoped key needs Balances (read), Beneficiaries (read/write), Transfers (read/write), Simulations (write) and
+Financial Transactions (read). Model spend is capped by `LLM_BUDGET_USD` in `.env` (default $20). Call logs and
+scorecards go to `runs/`. More commands — [below](#architecture).
 
 ## Problem
 
